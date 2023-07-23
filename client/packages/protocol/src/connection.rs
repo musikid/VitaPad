@@ -1,6 +1,7 @@
 use std::vec::Drain;
 
 use flatbuffers_structs::{
+    config::net_protocol::config::{ConfigPacket, ConfigPacketArgs},
     flatbuffers::{self, FlatBufferBuilder},
     net_protocol::{Handshake, HandshakeArgs, Packet, PacketArgs, PacketContent},
 };
@@ -37,6 +38,15 @@ impl Connection {
             },
         );
         builder.finish_size_prefixed(packet, None);
+
+        self.outgoing_buffer
+            .extend_from_slice(builder.finished_data());
+    }
+
+    pub fn send_config(&mut self, config_args: ConfigPacketArgs) {
+        let mut builder = FlatBufferBuilder::new();
+        let config = ConfigPacket::create(&mut builder, &config_args);
+        builder.finish_size_prefixed(config, None);
 
         self.outgoing_buffer
             .extend_from_slice(builder.finished_data());

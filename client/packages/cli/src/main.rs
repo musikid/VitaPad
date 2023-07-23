@@ -21,8 +21,8 @@ struct Args {
     /// (default: 5000)
     port: Option<u16>,
     #[argh(option)]
-    /// polling rate
-    polling_rate: Option<u64>,
+    /// polling interval in microseconds
+    polling_interval: Option<u64>,
     /// IP address of the Vita to connect to
     #[argh(positional)]
     ip: String,
@@ -42,14 +42,17 @@ fn main() -> color_eyre::Result<()> {
     const NET_PORT: u16 = 5000;
     const TIMEOUT: Duration = Duration::from_secs(25);
     const BUFFER_SIZE: usize = 4196;
-    const POLLING_RATE: u64 = 1 * 1000 / 250;
+    const MIN_POLLING_RATE: u64 = (1 * 1000 / 250) * 1000;
 
     color_eyre::install()?;
     pretty_env_logger::init();
 
     let args: Args = argh::from_env();
     let remote_port = args.port.unwrap_or(NET_PORT);
-    let polling_rate = args.polling_rate.unwrap_or(POLLING_RATE);
+    let polling_interval = args
+        .polling_interval
+        .map(|v| v.max(MIN_POLLING_RATE))
+        .unwrap_or(MIN_POLLING_RATE);
 
     let addr = SocketAddr::V4(SocketAddrV4::new(
         args.ip.parse().wrap_err("invalid IPv4 address")?,
@@ -133,7 +136,7 @@ fn main() -> color_eyre::Result<()> {
     println!("Connection established, press Ctrl+C to exit");
 
     loop {
-        std::thread::sleep(Duration::from_millis(polling_rate));
+        std::thread::sleep(Duration::from_micros(polling_interval));
         log::trace!("Polling");
 
         if last_time
