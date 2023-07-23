@@ -8,7 +8,7 @@ use std::{
 use argh::FromArgs;
 use color_eyre::eyre::WrapErr;
 
-use flatbuffers_structs::net_protocol::{Endpoint, HandshakeArgs};
+use flatbuffers_structs::net_protocol::{ConfigArgs, Endpoint, HandshakeArgs};
 use protocol::connection::Connection;
 use vita_virtual_device::{VitaDevice, VitaVirtualDevice};
 
@@ -135,8 +135,25 @@ fn main() -> color_eyre::Result<()> {
     );
     println!("Connection established, press Ctrl+C to exit");
 
+    if polling_interval < MIN_POLLING_RATE {
+        log::warn!(
+            "Polling interval is too low, it has been set to {} microseconds",
+            MIN_POLLING_RATE
+        );
+    }
+
+    if polling_interval != MIN_POLLING_RATE {
+        conn.send_config(ConfigArgs {
+            polling_interval: polling_interval,
+            ..Default::default()
+        });
+        ctrl_socket
+            .write_all(conn.retrieve_out_data().as_slice())
+            .wrap_err("Failed to send configuration to Vita")?;
+    }
+
     loop {
-        std::thread::sleep(Duration::from_micros(polling_interval));
+        // std::thread::sleep(Duration::from_micros(polling_interval));
         log::trace!("Polling");
 
         if last_time
