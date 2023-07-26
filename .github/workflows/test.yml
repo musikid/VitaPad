@@ -53,11 +53,12 @@ jobs:
           git clone https://github.com/vitasdk/vdpm
           cd vdpm
           export VITASDK=/usr/local/vitasdk
-          sudo -E ./bootstrap-vitasdk.sh
-          sudo -E ./install-all.sh
+          ./bootstrap-vitasdk.sh
+          ./install-all.sh
       
       - name: Install flatbuffers
         run: |
+          sudo apt-get install -y libarchive-tools xutils-dev
           git clone https://github.com/musikid/packages
           cd packages/flatbuffers
           export PATH="$VITASDK/bin:$PATH" 
