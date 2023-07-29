@@ -20,11 +20,6 @@ if(DEFINED ENV{VITA_IP})
   set(VITA_IP $ENV{VITA_IP})
 endif()
 
-if(DEFINED ENV{DEBUG_IP})
-  add_compile_definitions(DEBUG_IP="$ENV{DEBUG_IP}")
-endif()
-
-
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d PARENTAL_LEVEL=1")
@@ -86,7 +81,7 @@ target_link_libraries(${VITA_APP_NAME}
   png16
   z
   SceGxm_stub
-  debugnet
+  SceLibDbg_stub
   flatbuffers
   pthread
 )

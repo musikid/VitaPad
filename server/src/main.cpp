@@ -1,4 +1,3 @@
-#include <arpa/inet.h>
 #include <psp2/ctrl.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/motion.h>
@@ -19,12 +18,9 @@
 #include <common.h>
 #include <netprotocol_generated.h>
 
-#ifdef DEBUG_IP
-#include <debugnet.h>
-#else
-#define debugNetPrintf(...)
+#include <psp2/libdbg.h>
+
 constexpr size_t NET_INIT_SIZE = 1 * 1024 * 1024;
-#endif
 
 constexpr size_t MAX_EPOLL_EVENTS = 10;
 constexpr time_t MAX_HEARTBEAT_INTERVAL = 60;
@@ -188,7 +184,6 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
 
       if (ev.events & SCE_NET_EPOLLHUP || ev.events & SCE_NET_EPOLLERR) {
         if (data->type == SocketType::CLIENT) {
-          debugNetPrintf(ERROR, "Client %d closed connection\n", data->fd());
           disconnect_client(data->client(), message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLIN) {
@@ -200,15 +195,12 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
 
         auto client = data->client();
         try {
-          debugNetPrintf(DEBUG, "Handling ingoing data\n");
           net::handle_ingoing_data(*client);
         } catch (const net::NetException &e) {
-          debugNetPrintf(ERROR, "Network exception: %s\n", e.what());
           if (e.error_code() == SCE_NET_ECONNRESET || e.error_code() == 0) {
             disconnect_client(client, message->ev_flag_connect_state);
           }
         } catch (const std::exception &e) {
-          debugNetPrintf(ERROR, "Exception: %s\n", e.what());
           disconnect_client(client, message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLOUT) {
@@ -223,7 +215,6 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
           try {
             net::send_handshake_response(*client, NET_PORT,
                                          MAX_HEARTBEAT_INTERVAL);
-            debugNetPrintf(DEBUG, "Sending handshake response\n");
 
             SceNetEpollEvent ev = {};
             ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLHUP | SCE_NET_EPOLLERR;
@@ -231,12 +222,10 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
             sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_MOD, client->ctrl_fd(),
                                &ev);
           } catch (const net::NetException &e) {
-            debugNetPrintf(ERROR, "Network exception: %s\n", e.what());
             if (e.error_code() == SCE_NET_ECONNRESET) {
               disconnect_client(client, message->ev_flag_connect_state);
             }
           } catch (const std::exception &e) {
-            debugNetPrintf(ERROR, "Exception: %s\n", e.what());
             disconnect_client(client, message->ev_flag_connect_state);
           }
 
@@ -255,11 +244,7 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
       continue;
 
     for (auto &client : clients) {
-      debugNetPrintf(DEBUG, "Checking heartbeat: %lu for %lu\n",
-                     client->time_since_last_heartbeat(), client->ctrl_fd());
       if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
-        debugNetPrintf(INFO, "Delay expired, disconnecting client: %lu",
-                       client->ctrl_fd());
         disconnect_client(client, message->ev_flag_connect_state);
       }
       client->shrink_buffer();
@@ -272,21 +257,6 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
                        return client->state() == ClientData::State::Connected &&
                               client->is_polling_time_elapsed();
                      })) {
-#ifdef DEBUG_IP
-      for (auto &client : clients) {
-        auto client_addr = client->data_conn_info();
-        auto client_addr_in =
-            reinterpret_cast<SceNetSockaddrIn *>(&client_addr);
-        char ip[INET_ADDRSTRLEN];
-        sceNetInetNtop(SCE_NET_AF_INET,
-                       static_cast<void *>(&client_addr_in->sin_addr), ip,
-                       sizeof(ip));
-
-        debugNetPrintf(DEBUG, "Address: %s:%d, state: %d, last polling: %llu\n",
-                       ip, sceNetNtohs(client_addr_in->sin_port),
-                       client->state(), client->time_since_last_sent_data());
-      }
-#endif
       continue;
     }
 
@@ -305,17 +275,6 @@ static int main_thread(__attribute__((unused)) unsigned int arglen,
         client->update_sent_data_time();
         auto client_addr = client->data_conn_info();
         auto addrlen = sizeof(client_addr);
-#ifdef DEBUG_IP
-        auto client_addr_in =
-            reinterpret_cast<SceNetSockaddrIn *>(&client_addr);
-        char ip[INET_ADDRSTRLEN];
-        sceNetInetNtop(SCE_NET_AF_INET,
-                       static_cast<void *>(&client_addr_in->sin_addr), ip,
-                       sizeof(ip));
-
-        debugNetPrintf(DEBUG, "Sending data to %s:%d\n", ip,
-                       sceNetNtohs(client_addr_in->sin_port));
-#endif
         sceNetSendto(server_udp_fd, buffer, buffer_size, 0, &client_addr,
                      addrlen);
       }
@@ -366,11 +325,6 @@ int main() {
   SceNetInAddr vita_addr;
   sceNetInetPton(SCE_NET_AF_INET, info.ip_address, &vita_addr);
 
-#ifdef DEBUG_IP
-  // DEBUG
-  debugNetInit(DEBUG_IP, 8174, DEBUG);
-#endif
-
   SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, NULL);
   MainThreadMessage main_message = {ev_connect};
   // Open the main thread with an event flag in argument to write the
@@ -396,10 +350,6 @@ int main() {
   } while (sceKernelWaitEventFlag(ev_connect, CONNECT | DISCONNECT,
                                   SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR,
                                   &state, &TIMEOUT) == 0);
-
-#ifdef DEBUG_IP
-  debugNetFinish();
-#endif // DEBUG_IP
 
   sceNetCtlTerm();
   sceNetTerm();

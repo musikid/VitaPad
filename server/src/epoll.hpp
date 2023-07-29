@@ -1,6 +1,8 @@
 #ifndef EPOLL_HPP
 #define EPOLL_HPP
 
+#include <arpa/inet.h>
+#include <psp2/libdbg.h>
 #include <psp2/net/net.h>
 #include <psp2/rtc.h>
 
@@ -16,7 +18,7 @@
 
 #include <netprotocol_generated.h>
 
-constexpr unsigned int MIN_POLLING_INTERVAL_MICROS = (1 * 1000 / 250) * 1000;
+constexpr unsigned int MIN_POLLING_INTERVAL_MICROS = (1 * 1000 / 144) * 1000;
 
 class TimeHelper {
 public:
