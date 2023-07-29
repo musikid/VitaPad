@@ -8,7 +8,14 @@
 #include <optional>
 #include <vector>
 
-#include "epoll.hpp"
+typedef struct {
+  SceUID ev_flag_connect_state;
+} NetThreadMessage;
+
+enum ConnectionState {
+  DISCONNECT = 1,
+  CONNECT = 2,
+};
 
 constexpr const char *sce_net_strerror(unsigned int error_code) {
   switch (error_code) {
@@ -266,9 +273,8 @@ private:
   char msg_[max_error_msg_size];
 };
 
-void handle_ingoing_data(ClientData &client);
-void send_handshake_response(ClientData &client, uint16_t port,
-                             uint32_t heartbeat_interval);
 } // namespace net
+
+int net_thread(__attribute__((unused)) unsigned int arglen, void *argp);
 
 #endif // NET_HPP

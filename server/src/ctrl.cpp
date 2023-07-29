@@ -1,3 +1,11 @@
+#include <assert.h>
+
+#include <psp2/ctrl.h>
+#include <psp2/kernel/threadmgr.h>
+#include <psp2/motion.h>
+#include <psp2/touch.h>
+#include <psp2/types.h>
+
 #include "ctrl.hpp"
 
 NetProtocol::ButtonsData convert_pad_data(const SceCtrlData &data) {
@@ -23,4 +31,39 @@ convert_touch_data(flatbuffers::FlatBufferBuilder &builder,
   }
 
   return NetProtocol::CreateTouchDataDirect(builder, &reports);
+}
+
+flatbuffers::FlatBufferBuilder get_ctrl_as_netprotocol() {
+  SceCtrlData pad;
+  SceMotionSensorState motion_data; // TODO: Needs calibration
+  SceTouchData touch_data_front, touch_data_back;
+
+  flatbuffers::FlatBufferBuilder builder(512);
+
+  sceCtrlPeekBufferPositive(0, &pad, 1);
+  auto buttons = convert_pad_data(pad);
+
+  sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch_data_front, 1);
+  auto data_front = convert_touch_data(builder, touch_data_front);
+
+  sceTouchPeek(SCE_TOUCH_PORT_BACK, &touch_data_back, 1);
+  auto data_back = convert_touch_data(builder, touch_data_back);
+
+  sceMotionGetSensorState(&motion_data, 1);
+  NetProtocol::Vector3 accel(motion_data.accelerometer.x,
+                             motion_data.accelerometer.y,
+                             motion_data.accelerometer.z);
+  NetProtocol::Vector3 gyro(motion_data.gyro.x, motion_data.gyro.y,
+                            motion_data.gyro.z);
+  NetProtocol::MotionData motion(accel, gyro);
+
+  auto content =
+      NetProtocol::CreatePad(builder, &buttons, pad.lx, pad.ly, pad.rx, pad.ry,
+                             data_front, data_back, &motion, pad.timeStamp);
+
+  auto packet = NetProtocol::CreatePacket(
+      builder, NetProtocol::PacketContent::Pad, content.Union());
+  builder.FinishSizePrefixed(packet);
+
+  return builder;
 }
