@@ -275,6 +275,6 @@ private:
 
 } // namespace net
 
-int net_thread(__attribute__((unused)) unsigned int arglen, void *argp);
+int net_thread(unsigned int arglen, void *argp);
 
 #endif // NET_HPP

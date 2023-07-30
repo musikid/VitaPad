@@ -64,6 +64,11 @@ int main() {
   // connection state
   SceUID main_thread_id = sceKernelCreateThread(
       "NetThread", &net_thread, 0x10000100, 0x10000, 0, 0, NULL);
+  if (main_thread_id < 0) {
+    SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", main_thread_id);
+    return -1;
+  }
+
   sceKernelStartThread(main_thread_id, sizeof(net_message), &net_message);
 
   unsigned int state = 0;
