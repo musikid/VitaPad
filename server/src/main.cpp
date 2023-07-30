@@ -16,7 +16,6 @@
 #include "net.hpp"
 
 #include <common.h>
-#include <netprotocol_generated.h>
 
 #include <psp2/libdbg.h>
 
@@ -43,7 +42,7 @@ int main() {
 
   // Initializing network stuffs
   sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
-  char vita_ip[32];
+  char vita_ip[INET_ADDRSTRLEN];
   int ret = sceNetShowNetstat();
   if ((unsigned)ret == SCE_NET_ERROR_ENOTINIT) {
     SceNetInitParam initparam;
@@ -55,12 +54,12 @@ int main() {
   sceNetCtlInit();
   SceNetCtlInfo info;
   sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
-  sprintf(vita_ip, "%s", info.ip_address);
+  snprintf(vita_ip, INET_ADDRSTRLEN, "%s", info.ip_address);
   SceNetInAddr vita_addr;
   sceNetInetPton(SCE_NET_AF_INET, info.ip_address, &vita_addr);
 
   SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, NULL);
-  NetThreadMessage net_message = {.ev_flag_connect_state = ev_connect};
+  NetThreadMessage net_message = {ev_connect};
   // Open the main thread with an event flag in argument to write the
   // connection state
   SceUID main_thread_id = sceKernelCreateThread(

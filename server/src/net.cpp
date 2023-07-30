@@ -36,6 +36,8 @@ void handle_ingoing_data(ClientData &client) {
     client.add_to_buffer(buffer, received);
   }
 
+  SCE_DBG_LOG_DEBUG("Received %i bytes from %s", received, client.ip());
+
   while (client.handle_heartbeat() || client.handle_data())
     ;
 
@@ -72,6 +74,7 @@ void send_handshake_response(ClientData &client, uint16_t port,
 void disconnect_client(std::shared_ptr<ClientData> client, SceUID ev_flag) {
   client->mark_for_removal();
   sceKernelSetEventFlag(ev_flag, ConnectionState::DISCONNECT);
+  SCE_DBG_LOG_INFO("Client %s disconnected", client->ip());
 }
 
 void add_client(int server_tcp_fd, SceUID epoll,
@@ -148,11 +151,14 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
         if (data->type == SocketType::SERVER) {
           add_client(server_tcp_fd, epoll, clients_manager,
                      message->ev_flag_connect_state);
+          SCE_DBG_LOG_INFO("New client connected: %s",
+                           clients_manager.clients().back()->ip());
           continue;
         }
 
         auto client = data->client();
         try {
+          SCE_DBG_LOG_INFO("Handling ingoing data from %s", client->ip());
           handle_ingoing_data(*client);
         } catch (const net::NetException &e) {
           if (e.error_code() == SCE_NET_ECONNRESET || e.error_code() == 0) {
@@ -172,6 +178,7 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
         case ClientData::State::WaitingForServerConfirm: {
           try {
             send_handshake_response(*client, NET_PORT, MAX_HEARTBEAT_INTERVAL);
+            SCE_DBG_LOG_INFO("Sent handshake response to %s", client->ip());
 
             SceNetEpollEvent ev = {};
             ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLHUP | SCE_NET_EPOLLERR;
@@ -204,7 +211,6 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
         disconnect_client(client, message->ev_flag_connect_state);
       }
-      client->shrink_buffer();
     }
 
     clients_manager.remove_marked_clients();
