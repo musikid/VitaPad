@@ -60,16 +60,16 @@ int main() {
 
   SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, NULL);
   NetThreadMessage net_message = {ev_connect};
-  // Open the main thread with an event flag in argument to write the
+  // Open the net thread with an event flag in argument to write the
   // connection state
-  SceUID main_thread_id = sceKernelCreateThread(
-      "NetThread", &net_thread, 0x10000100, 0x10000, 0, 0, NULL);
-  if (main_thread_id < 0) {
-    SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", main_thread_id);
+  SceUID net_thread_id = sceKernelCreateThread("NetThread", &net_thread,
+                                               0x10000100, 0x10000, 0, 0, NULL);
+  if (net_thread_id < 0) {
+    SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", net_thread_id);
     return -1;
   }
 
-  sceKernelStartThread(main_thread_id, sizeof(net_message), &net_message);
+  sceKernelStartThread(net_thread_id, sizeof(net_message), &net_message);
 
   unsigned int state = 0;
   SceUInt TIMEOUT = (SceUInt)UINT32_MAX;
