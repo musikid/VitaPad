@@ -1,4 +1,4 @@
-#include <assert.h>
+#include <cassert>
 
 #include <psp2/ctrl.h>
 #include <psp2/kernel/threadmgr.h>
