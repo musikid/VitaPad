@@ -3,6 +3,7 @@
 #include <psp2/motion.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
+#include <psp2/power.h>
 #include <psp2/sysmodule.h>
 #include <psp2/touch.h>
 #include <psp2/types.h>
@@ -64,12 +65,17 @@ int main() {
   // connection state
   SceUID net_thread_id = sceKernelCreateThread("NetThread", &net_thread,
                                                0x10000100, 0x10000, 0, 0, NULL);
+
   if (net_thread_id < 0) {
     SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", net_thread_id);
     return -1;
   }
-
   sceKernelStartThread(net_thread_id, sizeof(net_message), &net_message);
+
+  // Reduce cpu and gpu frequency to save battery
+  scePowerSetArmClockFrequency(25);
+  scePowerSetBusClockFrequency(25);
+  scePowerSetGpuClockFrequency(10);
 
   unsigned int state = 0;
   SceUInt TIMEOUT = (SceUInt)UINT32_MAX;

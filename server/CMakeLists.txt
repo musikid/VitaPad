@@ -82,6 +82,7 @@ target_link_libraries(${VITA_APP_NAME}
   z
   SceGxm_stub
   SceLibDbg_stub
+  ScePower_stub
   flatbuffers
   pthread
 )
