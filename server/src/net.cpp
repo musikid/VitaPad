@@ -100,6 +100,32 @@ void add_client(int server_tcp_fd, SceUID epoll,
   }
 }
 
+struct NetCtlCallbackData {
+  SceUID event_flag_netctl;
+};
+
+enum NetCtlEvents {
+  Connected = 1,
+  Disconnected = 2,
+};
+
+void *netctl_cb(int state, void *arg) {
+  auto data = static_cast<NetCtlCallbackData *>(arg);
+
+  switch (state) {
+  case SCE_NETCTL_STATE_DISCONNECTED:
+  case SCE_NETCTL_STATE_CONNECTING:
+  case SCE_NETCTL_STATE_FINALIZING:
+    sceKernelSetEventFlag(data->event_flag_netctl, NetCtlEvents::Disconnected);
+    break;
+  case SCE_NETCTL_STATE_CONNECTED:
+    sceKernelSetEventFlag(data->event_flag_netctl, NetCtlEvents::Connected);
+    break;
+  default:
+    break;
+  }
+}
+
 int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   assert(arglen == sizeof(NetThreadMessage));
 
@@ -123,6 +149,12 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   sceNetBind(server_udp_fd, (SceNetSockaddr *)&serveraddr, sizeof(serveraddr));
 
   std::optional<ClientData> client;
+
+  int cbid;
+  auto connect_state = sceKernelCreateEventFlag("ev_netctl", 0, 0, NULL);
+  auto netctl_cb_data = NetCtlCallbackData{connect_state};
+  sceNetCtlInetRegisterCallback(&netctl_cb, &netctl_cb_data, &cbid);
+
   SceUID epoll = sceNetEpollCreate("SERVER_EPOLL", 0);
 
   SceNetEpollEvent ev = {};
@@ -135,6 +167,22 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
 
   while ((n = sceNetEpollWaitCB(epoll, events, MAX_EPOLL_EVENTS,
                                 MIN_POLLING_INTERVAL_MICROS)) >= 0) {
+    sceNetCtlCheckCallback();
+    unsigned int event;
+    if (sceKernelPollEventFlag(
+            connect_state, NetCtlEvents::Connected | NetCtlEvents::Disconnected,
+            SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR, &event) == 0) {
+      switch (event) {
+      case NetCtlEvents::Connected:
+        SCE_DBG_LOG_INFO("Connected to internet");
+        break;
+      case NetCtlEvents::Disconnected:
+        SCE_DBG_LOG_INFO("Disconnected from internet");
+        client.reset();
+        break;
+      }
+    }
+
     for (size_t i = 0; i < (unsigned)n; i++) {
       auto ev = events[i];
       SocketType sock_type = static_cast<SocketType>(ev.data.u32);
