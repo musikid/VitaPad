@@ -71,34 +71,31 @@ void send_handshake_response(ClientData &client, uint16_t port,
   client.set_state(ClientData::State::Connected);
 }
 
-void disconnect_client(std::shared_ptr<ClientData> client, SceUID ev_flag) {
-  client->mark_for_removal();
+void disconnect_client(std::optional<ClientData> &client, SceUID ev_flag) {
   sceKernelSetEventFlag(ev_flag, ConnectionState::DISCONNECT);
   SCE_DBG_LOG_INFO("Client %s disconnected", client->ip());
+  client.reset();
 }
 
 void add_client(int server_tcp_fd, SceUID epoll,
-                ClientsManager &clients_manager, SceUID ev_flag_connect_state) {
+                std::optional<ClientData> &client,
+                SceUID ev_flag_connect_state) {
   SceNetSockaddrIn clientaddr;
   unsigned int addrlen = sizeof(clientaddr);
   int client_fd =
       sceNetAccept(server_tcp_fd, (SceNetSockaddr *)&clientaddr, &addrlen);
   if (client_fd >= 0) {
-    auto client_data = std::make_shared<ClientData>(client_fd, epoll);
-    clients_manager.add_client(client_data);
-    auto member_ptr = std::make_unique<EpollMember>(client_data);
-    client_data->set_member_ptr(std::move(member_ptr));
+    client.emplace(client_fd, epoll);
 
     SceNetEpollEvent ev = {};
     ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLOUT | SCE_NET_EPOLLHUP |
                 SCE_NET_EPOLLERR;
-    ev.data.ptr = client_data->member_ptr().get();
+    ev.data.u32 = static_cast<decltype(ev.data.u32)>(SocketType::CLIENT);
     auto nbio = 1;
-    sceNetSetsockopt(client_data->ctrl_fd(), SCE_NET_SOL_SOCKET,
-                     SCE_NET_SO_NBIO, &nbio, sizeof(nbio));
+    sceNetSetsockopt(client_fd, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &nbio,
+                     sizeof(nbio));
 
-    sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, client_data->ctrl_fd(),
-                       &ev);
+    sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, client_fd, &ev);
     sceKernelSetEventFlag(ev_flag_connect_state, ConnectionState::CONNECT);
   }
 }
@@ -125,38 +122,41 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       sceNetSocket("SERVER_UDP_SOCKET", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, 0);
   sceNetBind(server_udp_fd, (SceNetSockaddr *)&serveraddr, sizeof(serveraddr));
 
-  ClientsManager clients_manager;
+  std::optional<ClientData> client;
   SceUID epoll = sceNetEpollCreate("SERVER_EPOLL", 0);
 
-  EpollMember server_ptr;
   SceNetEpollEvent ev = {};
   ev.events = SCE_NET_EPOLLIN;
-  ev.data.ptr = &server_ptr;
+  ev.data.u32 = static_cast<decltype(ev.data.u32)>(SocketType::SERVER);
   sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, server_tcp_fd, &ev);
 
   SceNetEpollEvent events[MAX_EPOLL_EVENTS];
   int n;
 
-  while ((n = sceNetEpollWait(epoll, events, MAX_EPOLL_EVENTS,
-                              MIN_POLLING_INTERVAL_MICROS)) >= 0) {
+  while ((n = sceNetEpollWaitCB(epoll, events, MAX_EPOLL_EVENTS,
+                                MIN_POLLING_INTERVAL_MICROS)) >= 0) {
     for (size_t i = 0; i < (unsigned)n; i++) {
       auto ev = events[i];
-      EpollMember *data = static_cast<EpollMember *>(ev.data.ptr);
+      SocketType sock_type = static_cast<SocketType>(ev.data.u32);
 
       if (ev.events & SCE_NET_EPOLLHUP || ev.events & SCE_NET_EPOLLERR) {
-        if (data->type == SocketType::CLIENT) {
-          disconnect_client(data->client(), message->ev_flag_connect_state);
+        if (sock_type == SocketType::CLIENT) {
+          disconnect_client(client, message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLIN) {
-        if (data->type == SocketType::SERVER) {
-          add_client(server_tcp_fd, epoll, clients_manager,
-                     message->ev_flag_connect_state);
-          SCE_DBG_LOG_INFO("New client connected: %s",
-                           clients_manager.clients().back()->ip());
+        if (sock_type == SocketType::SERVER) {
+          if (!client)
+            add_client(server_tcp_fd, epoll, client,
+                       message->ev_flag_connect_state);
+          if (client)
+            SCE_DBG_LOG_INFO("New client connected: %s", client->ip());
+
           continue;
         }
 
-        auto client = data->client();
+        if (!client)
+          SCE_DBG_LOG_ERROR("Client is null and still is in epoll");
+
         try {
           SCE_DBG_LOG_INFO("Handling ingoing data from %s", client->ip());
           handle_ingoing_data(*client);
@@ -168,11 +168,9 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
           disconnect_client(client, message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLOUT) {
-        if (data->type == SocketType::SERVER) {
+        if (sock_type == SocketType::SERVER) {
           continue;
         }
-
-        auto client = data->client();
 
         switch (client->state()) {
         case ClientData::State::WaitingForServerConfirm: {
@@ -182,7 +180,8 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
 
             SceNetEpollEvent ev = {};
             ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLHUP | SCE_NET_EPOLLERR;
-            ev.data.ptr = client->member_ptr().get();
+            ev.data.u32 =
+                static_cast<decltype(ev.data.u32)>(SocketType::CLIENT);
             sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_MOD, client->ctrl_fd(),
                                &ev);
           } catch (const net::NetException &e) {
@@ -202,38 +201,22 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       }
     }
 
-    auto clients = clients_manager.clients();
-
-    if (clients.empty())
+    if (!client)
       continue;
 
-    for (auto &client : clients) {
-      if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
-        disconnect_client(client, message->ev_flag_connect_state);
-      }
+    if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
+      disconnect_client(client, message->ev_flag_connect_state);
     }
 
-    clients_manager.remove_marked_clients();
+    if (client->state() == ClientData::State::Connected &&
+        client->is_polling_time_elapsed()) {
+      flatbuffers::FlatBufferBuilder pad_data = get_ctrl_as_netprotocol();
 
-    if (std::none_of(clients.begin(), clients.end(),
-                     [](const std::shared_ptr<ClientData> &client) {
-                       return client->state() == ClientData::State::Connected &&
-                              client->is_polling_time_elapsed();
-                     })) {
-      continue;
-    }
-
-    flatbuffers::FlatBufferBuilder pad_data = get_ctrl_as_netprotocol();
-
-    for (auto &client : clients) {
-      if (client->state() == ClientData::State::Connected &&
-          client->is_polling_time_elapsed()) {
-        client->update_sent_data_time();
-        auto client_addr = client->data_conn_info();
-        auto addrlen = sizeof(client_addr);
-        sceNetSendto(server_udp_fd, pad_data.GetBufferPointer(),
-                     pad_data.GetSize(), 0, &client_addr, addrlen);
-      }
+      client->update_sent_data_time();
+      auto client_addr = client->data_conn_info();
+      auto addrlen = sizeof(client_addr);
+      sceNetSendto(server_udp_fd, pad_data.GetBufferPointer(),
+                   pad_data.GetSize(), 0, &client_addr, addrlen);
     }
   }
 
