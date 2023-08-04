@@ -58,12 +58,12 @@ int main() {
   SceNetInAddr vita_addr;
   sceNetInetPton(SCE_NET_AF_INET, info.ip_address, &vita_addr);
 
-  SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, NULL);
+  SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, nullptr);
   NetThreadMessage net_message = {ev_connect};
   // Open the net thread with an event flag in argument to write the
   // connection state
-  SceUID net_thread_id = sceKernelCreateThread("NetThread", &net_thread,
-                                               0x10000100, 0x10000, 0, 0, NULL);
+  SceUID net_thread_id = sceKernelCreateThread(
+      "NetThread", &net_thread, 0x10000100, 0x10000, 0, 0, nullptr);
   if (net_thread_id < 0) {
     SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", net_thread_id);
     return -1;

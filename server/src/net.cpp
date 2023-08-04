@@ -124,6 +124,8 @@ void *netctl_cb(int state, void *arg) {
   default:
     break;
   }
+
+  return nullptr;
 }
 
 int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
@@ -151,7 +153,7 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   std::optional<ClientData> client;
 
   int cbid;
-  auto connect_state = sceKernelCreateEventFlag("ev_netctl", 0, 0, NULL);
+  auto connect_state = sceKernelCreateEventFlag("ev_netctl", 0, 0, nullptr);
   auto netctl_cb_data = NetCtlCallbackData{connect_state};
   sceNetCtlInetRegisterCallback(&netctl_cb, &netctl_cb_data, &cbid);
 
@@ -196,14 +198,16 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
           if (!client)
             add_client(server_tcp_fd, epoll, client,
                        message->ev_flag_connect_state);
-          if (client)
+          if (client) {
             SCE_DBG_LOG_INFO("New client connected: %s", client->ip());
+          }
 
           continue;
         }
 
-        if (!client)
+        if (!client) {
           SCE_DBG_LOG_ERROR("Client is null and still is in epoll");
+        }
 
         try {
           SCE_DBG_LOG_INFO("Handling ingoing data from %s", client->ip());
