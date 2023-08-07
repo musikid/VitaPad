@@ -17,7 +17,6 @@
 
 #include "heartbeat.hpp"
 
-#define FLATBUFFERS_TRACK_VERIFIER_BUFFER_SIZE
 #include <netprotocol_generated.h>
 
 constexpr unsigned int MIN_POLLING_INTERVAL_MICROS = (1 * 1000 / 144) * 1000;
@@ -78,22 +77,22 @@ private:
   SceUID epoll_;
 };
 
-class ClientDataException : public std::exception {
+class ClientException : public std::exception {
 public:
-  ClientDataException(std::string const &msg) : msg_(msg) {}
+  ClientException(std::string const &msg) : msg_(msg) {}
   char const *what() const noexcept override { return msg_.c_str(); }
 
 private:
   std::string msg_;
 };
 
-class ClientData {
+class Client {
 public:
   enum class State { WaitingForHandshake, WaitingForServerConfirm, Connected };
 
   static constexpr size_t MAX_BUFFER_ACCEPTABLE_SIZE = 1 * 1024 * 1024;
 
-  ClientData(int fd, SceUID epoll) : sock_(fd, epoll) {
+  Client(int fd, SceUID epoll) : sock_(fd, epoll) {
     SceNetSockaddrIn clientaddr;
     unsigned int addrlen = sizeof(clientaddr);
     sceNetGetpeername(fd, reinterpret_cast<SceNetSockaddr *>(&clientaddr),
@@ -132,12 +131,12 @@ public:
 
     if (buffer_.size() > MAX_BUFFER_ACCEPTABLE_SIZE) {
       buffer_.clear();
-      throw ClientDataException("Buffer size exceeded");
+      throw ClientException("Buffer size exceeded");
     }
   }
 
   bool handle_data() {
-    typedef void (ClientData::*buffer_handler)(const void *);
+    typedef void (Client::*BufferHandler)(const void *);
 
     flatbuffers::Verifier verifier(buffer_.data(), buffer_.size());
 
@@ -147,10 +146,11 @@ public:
     auto data = NetProtocol::GetSizePrefixedPacket(buffer_.data());
     SCE_DBG_LOG_TRACE("Received flatbuffer packet from %s", ip());
 
-    std::unordered_map<NetProtocol::PacketContent, buffer_handler> handlers = {
-        {NetProtocol::PacketContent::Handshake, &ClientData::handle_handshake},
-        {NetProtocol::PacketContent::Config, &ClientData::handle_config},
-    };
+    const std::unordered_map<NetProtocol::PacketContent, BufferHandler>
+        handlers = {
+            {NetProtocol::PacketContent::Handshake, &Client::handle_handshake},
+            {NetProtocol::PacketContent::Config, &Client::handle_config},
+        };
 
     auto handler_entry = handlers.find(data->content_type());
     if (handler_entry == handlers.end())
@@ -186,7 +186,7 @@ public:
 
     auto addr = reinterpret_cast<SceNetSockaddr *>(&clientaddr);
     set_data_conn_info(*addr);
-    set_state(ClientData::State::WaitingForServerConfirm);
+    set_state(Client::State::WaitingForServerConfirm);
     SCE_DBG_LOG_TRACE("Setting state to WaitingForServerConfirm for %s", ip());
   }
 

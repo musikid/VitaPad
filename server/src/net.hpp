@@ -13,9 +13,11 @@ typedef struct {
   SceUID ev_flag_connect_state;
 } NetThreadMessage;
 
-enum ConnectionState {
-  DISCONNECT = 1,
-  CONNECT = 2,
+enum NetEvent {
+  PC_DISCONNECT = 1,
+  PC_CONNECT = 2,
+  NET_CONNECT = 4,
+  NET_DISCONNECT = 8,
 };
 
 constexpr const char *sce_net_strerror(unsigned int error_code) {

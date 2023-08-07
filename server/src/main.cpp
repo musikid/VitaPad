@@ -53,16 +53,12 @@ int main() {
   }
   sceNetCtlInit();
   SceNetCtlInfo info;
-  sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
-  snprintf(vita_ip, INET_ADDRSTRLEN, "%s", info.ip_address);
-  SceNetInAddr vita_addr;
-  sceNetInetPton(SCE_NET_AF_INET, info.ip_address, &vita_addr);
 
-  SceUID ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, nullptr);
+  auto ev_connect = sceKernelCreateEventFlag("ev_con", 0, 0, nullptr);
   NetThreadMessage net_message = {ev_connect};
   // Open the net thread with an event flag in argument to write the
   // connection state
-  SceUID net_thread_id = sceKernelCreateThread(
+  auto net_thread_id = sceKernelCreateThread(
       "NetThread", &net_thread, 0x10000100, 0x10000, 0, 0, nullptr);
   if (net_thread_id < 0) {
     SCE_DBG_LOG_ERROR("Error creating thread: 0x%08X", net_thread_id);
@@ -71,25 +67,49 @@ int main() {
 
   sceKernelStartThread(net_thread_id, sizeof(net_message), &net_message);
 
-  unsigned int state = 0;
+  unsigned int events;
+  sceNetCtlInetGetState(reinterpret_cast<int *>(&events));
+  bool connected_to_network = events == SCE_NETCTL_STATE_CONNECTED;
+  if (connected_to_network) {
+    sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
+    snprintf(vita_ip, INET_ADDRSTRLEN, "%s", info.ip_address);
+  }
+  events = 0;
+
   SceUInt TIMEOUT = (SceUInt)UINT32_MAX;
   do {
     vita2d_start_drawing();
     vita2d_clear_screen();
     vita2d_pgf_draw_text(debug_font, 2, 20, text_color, 1.0,
                          "VitaPad v1.3 build from " __DATE__ ", " __TIME__);
-    vita2d_pgf_draw_textf(debug_font, 2, 60, text_color, 1.0,
-                          "Listening on:\nIP: %s\nPort: %d", vita_ip, NET_PORT);
+    if (events & NetEvent::NET_CONNECT) {
+      connected_to_network = true;
+      sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
+      snprintf(vita_ip, INET_ADDRSTRLEN, "%s", info.ip_address);
+    } else if (events & NetEvent::NET_DISCONNECT) {
+      connected_to_network = false;
+    }
+
+    if (connected_to_network) {
+      vita2d_pgf_draw_textf(debug_font, 2, 60, text_color, 1.0,
+                            "Listening on:\nIP: %s\nPort: %d", vita_ip,
+                            NET_PORT);
+    } else {
+      vita2d_pgf_draw_text(debug_font, 2, 60, text_color, 1.0,
+                           "Not connected to a network");
+    }
+
     vita2d_pgf_draw_textf(debug_font, 2, 200, text_color, 1.0, "Status: %s",
-                          state & ConnectionState::CONNECT ? "Connected"
-                                                           : "Not connected");
+                          events & NetEvent::PC_CONNECT ? "Connected"
+                                                        : "Not connected");
     vita2d_end_drawing();
     vita2d_wait_rendering_done();
     vita2d_swap_buffers();
   } while (sceKernelWaitEventFlag(
                ev_connect,
-               ConnectionState::CONNECT | ConnectionState::DISCONNECT,
-               SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR, &state, &TIMEOUT) == 0);
+               NetEvent::PC_CONNECT | NetEvent::PC_DISCONNECT |
+                   NetEvent::NET_CONNECT | NetEvent::NET_DISCONNECT,
+               SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR, &events, &TIMEOUT) == 0);
 
   sceNetCtlTerm();
   sceNetTerm();
