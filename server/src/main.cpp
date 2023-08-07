@@ -1,5 +1,7 @@
+#include <arpa/inet.h>
 #include <psp2/ctrl.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/libdbg.h>
 #include <psp2/motion.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
@@ -12,12 +14,9 @@
 #include <climits>
 
 #include "ctrl.hpp"
-#include "epoll.hpp"
 #include "net.hpp"
 
 #include <common.h>
-
-#include <psp2/libdbg.h>
 
 constexpr size_t NET_INIT_SIZE = 1 * 1024 * 1024;
 

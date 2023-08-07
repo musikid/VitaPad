@@ -3,8 +3,8 @@
 #include <assert.h>
 #include <common.h>
 
+#include "client.hpp"
 #include "ctrl.hpp"
-#include "epoll.hpp"
 #include "net.hpp"
 
 constexpr size_t MAX_EPOLL_EVENTS = 10;
@@ -105,8 +105,10 @@ static void add_client(int server_tcp_fd, SceUID epoll,
 
 static void refuse_client(int server_tcp_fd) {
   SceNetSockaddrIn clientaddr;
-  auto client_fd = sceNetAccept(server_tcp_fd, (SceNetSockaddr *)&clientaddr,
-                                &(unsigned int){sizeof(clientaddr)});
+  auto clientaddr_size = sizeof(clientaddr);
+  auto client_fd = sceNetAccept(server_tcp_fd,
+                                reinterpret_cast<SceNetSockaddr *>(&clientaddr),
+                                &clientaddr_size);
   if (client_fd >= 0) {
     sceNetSocketClose(client_fd);
   }
@@ -227,6 +229,7 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
 
         if (!client) {
           SCE_DBG_LOG_ERROR("Client is null and still is in epoll");
+          continue;
         }
 
         try {
@@ -293,7 +296,6 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   }
 
   sceNetCtlInetUnregisterCallback(cbid);
-  disconnect_client(client, message->ev_flag_connect_state);
 
   return 0;
 }
