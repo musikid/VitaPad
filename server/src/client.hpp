@@ -17,7 +17,6 @@
 
 #include "heartbeat.hpp"
 
-#define FLATBUFFERS_TRACK_VERIFIER_BUFFER_SIZE
 #include <netprotocol_generated.h>
 
 constexpr unsigned int MIN_POLLING_INTERVAL_MICROS = (1 * 1000 / 144) * 1000;
@@ -67,6 +66,7 @@ class EpollSocket {
 public:
   EpollSocket(int sock_fd, SceUID epoll) : fd_(sock_fd), epoll_(epoll) {}
   ~EpollSocket() {
+    SCE_DBG_LOG_TRACE("Closing socket %d", fd_);
     sceNetEpollControl(epoll_, SCE_NET_EPOLL_CTL_DEL, fd_, nullptr);
     sceNetSocketClose(fd_);
   }
@@ -77,24 +77,22 @@ private:
   SceUID epoll_;
 };
 
-class EpollMember;
-
-class ClientDataException : public std::exception {
+class ClientException : public std::exception {
 public:
-  ClientDataException(std::string const &msg) : msg_(msg) {}
+  ClientException(std::string const &msg) : msg_(msg) {}
   char const *what() const noexcept override { return msg_.c_str(); }
 
 private:
   std::string msg_;
 };
 
-class ClientData {
+class Client {
 public:
   enum class State { WaitingForHandshake, WaitingForServerConfirm, Connected };
 
   static constexpr size_t MAX_BUFFER_ACCEPTABLE_SIZE = 1 * 1024 * 1024;
 
-  ClientData(int fd, SceUID epoll) : sock_(fd, epoll) {
+  Client(int fd, SceUID epoll) : sock_(fd, epoll) {
     SceNetSockaddrIn clientaddr;
     unsigned int addrlen = sizeof(clientaddr);
     sceNetGetpeername(fd, reinterpret_cast<SceNetSockaddr *>(&clientaddr),
@@ -133,12 +131,12 @@ public:
 
     if (buffer_.size() > MAX_BUFFER_ACCEPTABLE_SIZE) {
       buffer_.clear();
-      throw ClientDataException("Buffer size exceeded");
+      throw ClientException("Buffer size exceeded");
     }
   }
 
   bool handle_data() {
-    typedef void (ClientData::*buffer_handler)(const void *);
+    typedef void (Client::*BufferHandler)(const void *);
 
     flatbuffers::Verifier verifier(buffer_.data(), buffer_.size());
 
@@ -148,10 +146,11 @@ public:
     auto data = NetProtocol::GetSizePrefixedPacket(buffer_.data());
     SCE_DBG_LOG_TRACE("Received flatbuffer packet from %s", ip());
 
-    std::unordered_map<NetProtocol::PacketContent, buffer_handler> handlers = {
-        {NetProtocol::PacketContent::Handshake, &ClientData::handle_handshake},
-        {NetProtocol::PacketContent::Config, &ClientData::handle_config},
-    };
+    const std::unordered_map<NetProtocol::PacketContent, BufferHandler>
+        handlers = {
+            {NetProtocol::PacketContent::Handshake, &Client::handle_handshake},
+            {NetProtocol::PacketContent::Config, &Client::handle_config},
+        };
 
     auto handler_entry = handlers.find(data->content_type());
     if (handler_entry == handlers.end())
@@ -187,7 +186,7 @@ public:
 
     auto addr = reinterpret_cast<SceNetSockaddr *>(&clientaddr);
     set_data_conn_info(*addr);
-    set_state(ClientData::State::WaitingForServerConfirm);
+    set_state(Client::State::WaitingForServerConfirm);
     SCE_DBG_LOG_TRACE("Setting state to WaitingForServerConfirm for %s", ip());
   }
 
@@ -221,19 +220,11 @@ public:
 
   void shrink_buffer() { buffer_.shrink_to_fit(); }
 
-  bool to_be_removed() const { return to_be_removed_; }
-  void mark_for_removal() { to_be_removed_ = true; }
-
   SceNetSockaddr data_conn_info() const {
     return reinterpret_cast<SceNetSockaddr const &>(data_conn_info_);
   }
   void set_data_conn_info(SceNetSockaddr info) {
     data_conn_info_ = reinterpret_cast<SceNetSockaddrIn &>(info);
-  }
-
-  const std::unique_ptr<EpollMember> &member_ptr() const { return member_ptr_; }
-  void set_member_ptr(std::unique_ptr<EpollMember> ptr) {
-    member_ptr_ = std::move(ptr);
   }
 
 private:
@@ -245,60 +236,15 @@ private:
    */
   uint64_t polling_time_ = MIN_POLLING_INTERVAL_MICROS;
 
-  bool to_be_removed_ = false;
   State state_ = State::WaitingForHandshake;
   std::vector<uint8_t> buffer_;
   SceNetSockaddrIn data_conn_info_;
   char ip_[INET_ADDRSTRLEN];
-  std::unique_ptr<EpollMember> member_ptr_;
-};
-
-class ClientsManager {
-public:
-  ClientsManager() : clients_() {}
-
-  void add_client(std::shared_ptr<ClientData> member) {
-    clients_.push_back(member);
-  }
-  std::vector<std::shared_ptr<ClientData>> &clients() { return clients_; }
-  void remove_marked_clients() {
-    clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
-                                  [](const auto &client) {
-                                    return client->to_be_removed();
-                                  }),
-                   clients_.end());
-  }
-
-private:
-  std::vector<std::shared_ptr<ClientData>> clients_;
 };
 
 enum class SocketType {
-  SERVER,
-  CLIENT,
-};
-
-class EpollMember {
-public:
-  SocketType type;
-
-  EpollMember() : type(SocketType::SERVER) {}
-
-  EpollMember(const std::shared_ptr<ClientData> &client_ctrl)
-      : type(SocketType::CLIENT), data_(client_ctrl) {}
-
-  int fd() const {
-    assert(type != SocketType::SERVER);
-    return data_.lock()->ctrl_fd();
-  }
-
-  std::shared_ptr<ClientData> client() {
-    assert(type != SocketType::SERVER);
-    return data_.lock();
-  }
-
-private:
-  std::weak_ptr<ClientData> data_;
+  SERVER = 1,
+  CLIENT = 2,
 };
 
 #endif // EPOLL_HPP

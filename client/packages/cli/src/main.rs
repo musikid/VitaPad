@@ -153,14 +153,14 @@ fn main() -> color_eyre::Result<()> {
     }
 
     loop {
-        // std::thread::sleep(Duration::from_micros(polling_interval));
+        std::thread::sleep(Duration::from_micros(polling_interval));
         log::trace!("Polling");
 
         if last_time
             .elapsed()
             .expect("Cannot get elapsed time")
             .as_secs()
-            >= (heartbeat_freq - 5).into()
+            >= (heartbeat_freq.saturating_sub(5)).into()
         {
             log::debug!("Sending heartbeat to Vita");
             conn.send_heartbeat();

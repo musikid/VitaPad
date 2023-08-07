@@ -3,14 +3,14 @@
 #include <assert.h>
 #include <common.h>
 
+#include "client.hpp"
 #include "ctrl.hpp"
-#include "epoll.hpp"
 #include "net.hpp"
 
 constexpr size_t MAX_EPOLL_EVENTS = 10;
-constexpr time_t MAX_HEARTBEAT_INTERVAL = 60;
+constexpr time_t MAX_HEARTBEAT_INTERVAL = 25;
 
-int send_all(int fd, const void *buf, unsigned int size) {
+static int send_all(int fd, const void *buf, unsigned int size) {
   const char *buf_ptr = static_cast<const char *>(buf);
   int bytes_sent = 0;
 
@@ -26,7 +26,7 @@ int send_all(int fd, const void *buf, unsigned int size) {
   return bytes_sent;
 }
 
-void handle_ingoing_data(ClientData &client) {
+static void handle_ingoing_data(Client &client) {
   constexpr size_t BUFFER_SIZE = 1024;
 
   uint8_t buffer[BUFFER_SIZE];
@@ -51,8 +51,8 @@ void handle_ingoing_data(ClientData &client) {
   }
 }
 
-void send_handshake_response(ClientData &client, uint16_t port,
-                             uint32_t heartbeat_interval) {
+static void send_handshake_response(Client &client, uint16_t port,
+                                    uint32_t heartbeat_interval) {
   flatbuffers::FlatBufferBuilder builder;
   auto handshake_confirm = NetProtocol::CreateHandshake(
       builder, NetProtocol::Endpoint::Server, port, heartbeat_interval);
@@ -68,39 +68,78 @@ void send_handshake_response(ClientData &client, uint16_t port,
     throw net::NetException(sent);
   }
 
-  client.set_state(ClientData::State::Connected);
+  client.set_state(Client::State::Connected);
 }
 
-void disconnect_client(std::shared_ptr<ClientData> client, SceUID ev_flag) {
-  client->mark_for_removal();
-  sceKernelSetEventFlag(ev_flag, ConnectionState::DISCONNECT);
+static void disconnect_client(std::optional<Client> &client, SceUID ev_flag) {
+  sceKernelSetEventFlag(ev_flag, NetEvent::PC_DISCONNECT);
+  if (!client)
+    return;
+
   SCE_DBG_LOG_INFO("Client %s disconnected", client->ip());
+  client.reset();
 }
 
-void add_client(int server_tcp_fd, SceUID epoll,
-                ClientsManager &clients_manager, SceUID ev_flag_connect_state) {
+static void add_client(int server_tcp_fd, SceUID epoll,
+                       std::optional<Client> &client,
+                       SceUID ev_flag_connect_state) {
   SceNetSockaddrIn clientaddr;
   unsigned int addrlen = sizeof(clientaddr);
   int client_fd =
       sceNetAccept(server_tcp_fd, (SceNetSockaddr *)&clientaddr, &addrlen);
   if (client_fd >= 0) {
-    auto client_data = std::make_shared<ClientData>(client_fd, epoll);
-    clients_manager.add_client(client_data);
-    auto member_ptr = std::make_unique<EpollMember>(client_data);
-    client_data->set_member_ptr(std::move(member_ptr));
+    client.emplace(client_fd, epoll);
 
     SceNetEpollEvent ev = {};
     ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLOUT | SCE_NET_EPOLLHUP |
                 SCE_NET_EPOLLERR;
-    ev.data.ptr = client_data->member_ptr().get();
+    ev.data.u32 = static_cast<decltype(ev.data.u32)>(SocketType::CLIENT);
     auto nbio = 1;
-    sceNetSetsockopt(client_data->ctrl_fd(), SCE_NET_SOL_SOCKET,
-                     SCE_NET_SO_NBIO, &nbio, sizeof(nbio));
+    sceNetSetsockopt(client_fd, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &nbio,
+                     sizeof(nbio));
 
-    sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, client_data->ctrl_fd(),
-                       &ev);
-    sceKernelSetEventFlag(ev_flag_connect_state, ConnectionState::CONNECT);
+    sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, client_fd, &ev);
+    sceKernelSetEventFlag(ev_flag_connect_state, NetEvent::PC_CONNECT);
   }
+}
+
+static void refuse_client(int server_tcp_fd) {
+  SceNetSockaddrIn clientaddr;
+  auto clientaddr_size = sizeof(clientaddr);
+  auto client_fd = sceNetAccept(server_tcp_fd,
+                                reinterpret_cast<SceNetSockaddr *>(&clientaddr),
+                                &clientaddr_size);
+  if (client_fd >= 0) {
+    sceNetSocketClose(client_fd);
+  }
+}
+
+struct NetCtlCallbackData {
+  SceUID event_flag_netctl;
+};
+
+enum NetCtlEvents {
+  Connected = 1,
+  Disconnected = 2,
+};
+
+void *netctl_cb(int state, void *arg) {
+  auto data = static_cast<NetCtlCallbackData *>(arg);
+
+  switch (state) {
+  case SCE_NETCTL_STATE_DISCONNECTED:
+  case SCE_NETCTL_STATE_CONNECTING:
+  case SCE_NETCTL_STATE_FINALIZING:
+    sceKernelSetEventFlag(data->event_flag_netctl, NetCtlEvents::Disconnected);
+    break;
+  case SCE_NETCTL_STATE_CONNECTED:
+    sceKernelSetEventFlag(data->event_flag_netctl, NetCtlEvents::Connected);
+    break;
+  default:
+    break;
+  }
+
+  return nullptr;
 }
 
 int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
@@ -125,38 +164,74 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       sceNetSocket("SERVER_UDP_SOCKET", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, 0);
   sceNetBind(server_udp_fd, (SceNetSockaddr *)&serveraddr, sizeof(serveraddr));
 
-  ClientsManager clients_manager;
+  std::optional<Client> client;
+
+  int cbid;
+  auto connect_state = sceKernelCreateEventFlag("ev_netctl", 0, 0, nullptr);
+  auto netctl_cb_data = NetCtlCallbackData{connect_state};
+  sceNetCtlInetRegisterCallback(&netctl_cb, &netctl_cb_data, &cbid);
+
   SceUID epoll = sceNetEpollCreate("SERVER_EPOLL", 0);
 
-  EpollMember server_ptr;
   SceNetEpollEvent ev = {};
   ev.events = SCE_NET_EPOLLIN;
-  ev.data.ptr = &server_ptr;
+  ev.data.u32 = static_cast<decltype(ev.data.u32)>(SocketType::SERVER);
   sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_ADD, server_tcp_fd, &ev);
 
   SceNetEpollEvent events[MAX_EPOLL_EVENTS];
   int n;
 
-  while ((n = sceNetEpollWait(epoll, events, MAX_EPOLL_EVENTS,
-                              MIN_POLLING_INTERVAL_MICROS)) >= 0) {
+  while ((n = sceNetEpollWaitCB(epoll, events, MAX_EPOLL_EVENTS,
+                                MIN_POLLING_INTERVAL_MICROS)) >= 0) {
+    sceNetCtlCheckCallback();
+    unsigned int event;
+    if (sceKernelPollEventFlag(
+            connect_state, NetCtlEvents::Connected | NetCtlEvents::Disconnected,
+            SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR, &event) == 0) {
+      switch (event) {
+      case NetCtlEvents::Connected:
+        SCE_DBG_LOG_INFO("Connected to internet");
+        sceKernelSetEventFlag(message->ev_flag_connect_state,
+                              NetEvent::NET_CONNECT);
+        break;
+      case NetCtlEvents::Disconnected:
+        SCE_DBG_LOG_INFO("Disconnected from internet");
+        sceKernelSetEventFlag(message->ev_flag_connect_state,
+                              NetEvent::NET_DISCONNECT);
+        client.reset();
+        break;
+      }
+    }
+
     for (size_t i = 0; i < (unsigned)n; i++) {
       auto ev = events[i];
-      EpollMember *data = static_cast<EpollMember *>(ev.data.ptr);
+      SocketType sock_type = static_cast<SocketType>(ev.data.u32);
 
       if (ev.events & SCE_NET_EPOLLHUP || ev.events & SCE_NET_EPOLLERR) {
-        if (data->type == SocketType::CLIENT) {
-          disconnect_client(data->client(), message->ev_flag_connect_state);
+        if (sock_type == SocketType::CLIENT) {
+          disconnect_client(client, message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLIN) {
-        if (data->type == SocketType::SERVER) {
-          add_client(server_tcp_fd, epoll, clients_manager,
-                     message->ev_flag_connect_state);
-          SCE_DBG_LOG_INFO("New client connected: %s",
-                           clients_manager.clients().back()->ip());
+        if (sock_type == SocketType::SERVER) {
+          if (!client) {
+            add_client(server_tcp_fd, epoll, client,
+                       message->ev_flag_connect_state);
+          } else {
+            refuse_client(server_tcp_fd);
+          }
+
+          if (client) {
+            SCE_DBG_LOG_INFO("New client connected: %s", client->ip());
+          }
+
           continue;
         }
 
-        auto client = data->client();
+        if (!client) {
+          SCE_DBG_LOG_ERROR("Client is null and still is in epoll");
+          continue;
+        }
+
         try {
           SCE_DBG_LOG_INFO("Handling ingoing data from %s", client->ip());
           handle_ingoing_data(*client);
@@ -168,21 +243,20 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
           disconnect_client(client, message->ev_flag_connect_state);
         }
       } else if (ev.events & SCE_NET_EPOLLOUT) {
-        if (data->type == SocketType::SERVER) {
+        if (sock_type == SocketType::SERVER) {
           continue;
         }
 
-        auto client = data->client();
-
         switch (client->state()) {
-        case ClientData::State::WaitingForServerConfirm: {
+        case Client::State::WaitingForServerConfirm: {
           try {
             send_handshake_response(*client, NET_PORT, MAX_HEARTBEAT_INTERVAL);
             SCE_DBG_LOG_INFO("Sent handshake response to %s", client->ip());
 
             SceNetEpollEvent ev = {};
             ev.events = SCE_NET_EPOLLIN | SCE_NET_EPOLLHUP | SCE_NET_EPOLLERR;
-            ev.data.ptr = client->member_ptr().get();
+            ev.data.u32 =
+                static_cast<decltype(ev.data.u32)>(SocketType::CLIENT);
             sceNetEpollControl(epoll, SCE_NET_EPOLL_CTL_MOD, client->ctrl_fd(),
                                &ev);
           } catch (const net::NetException &e) {
@@ -202,43 +276,26 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       }
     }
 
-    auto clients = clients_manager.clients();
-
-    if (clients.empty())
+    if (!client)
       continue;
 
-    for (auto &client : clients) {
-      if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
-        disconnect_client(client, message->ev_flag_connect_state);
-      }
+    if (client->time_since_last_heartbeat() > MAX_HEARTBEAT_INTERVAL) {
+      disconnect_client(client, message->ev_flag_connect_state);
     }
 
-    clients_manager.remove_marked_clients();
+    if (client->state() == Client::State::Connected &&
+        client->is_polling_time_elapsed()) {
+      auto pad_data = get_ctrl_as_netprotocol();
 
-    if (std::none_of(clients.begin(), clients.end(),
-                     [](const std::shared_ptr<ClientData> &client) {
-                       return client->state() == ClientData::State::Connected &&
-                              client->is_polling_time_elapsed();
-                     })) {
-      continue;
-    }
-
-    flatbuffers::FlatBufferBuilder pad_data = get_ctrl_as_netprotocol();
-
-    for (auto &client : clients) {
-      if (client->state() == ClientData::State::Connected &&
-          client->is_polling_time_elapsed()) {
-        client->update_sent_data_time();
-        auto client_addr = client->data_conn_info();
-        auto addrlen = sizeof(client_addr);
-        sceNetSendto(server_udp_fd, pad_data.GetBufferPointer(),
-                     pad_data.GetSize(), 0, &client_addr, addrlen);
-      }
+      client->update_sent_data_time();
+      auto client_addr = client->data_conn_info();
+      auto addrlen = sizeof(client_addr);
+      sceNetSendto(server_udp_fd, pad_data.GetBufferPointer(),
+                   pad_data.GetSize(), 0, &client_addr, addrlen);
     }
   }
 
-  sceKernelSetEventFlag(message->ev_flag_connect_state,
-                        ConnectionState::DISCONNECT);
+  sceNetCtlInetUnregisterCallback(cbid);
 
   return 0;
 }
