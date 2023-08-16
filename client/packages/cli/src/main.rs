@@ -160,6 +160,7 @@ fn main() -> color_eyre::Result<()> {
         .wrap_err("Failed to add socket to poller")?;
 
     let mut events = Vec::new();
+    let mut last_timestamp = 0;
     loop {
         log::trace!("Polling");
         let timeout = Duration::from_secs(
@@ -210,6 +211,12 @@ fn main() -> color_eyre::Result<()> {
             log::debug!("Event received: {event:?}");
             match event {
                 Ok(protocol::events::Event::PadDataReceived { data }) => {
+                    if data.timestamp <= last_timestamp {
+                        log::warn!("Timestamp is not increasing, dropping packet");
+                        continue;
+                    }
+                    last_timestamp = data.timestamp;
+
                     let report = vita_reports::MainReport::from(data);
                     log::trace!("Sending report to virtual device: {report:?}");
                     device
