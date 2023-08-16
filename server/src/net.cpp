@@ -9,6 +9,7 @@
 
 constexpr size_t MAX_EPOLL_EVENTS = 10;
 constexpr time_t MAX_HEARTBEAT_INTERVAL = 25;
+constexpr time_t SECOND_IN_MICROS = 1000 * 1000;
 
 static int send_all(int fd, const void *buf, unsigned int size) {
   const char *buf_ptr = static_cast<const char *>(buf);
@@ -153,20 +154,23 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   serveraddr.sin_family = SCE_NET_AF_INET;
   serveraddr.sin_addr.s_addr = sceNetHtonl(SCE_NET_INADDR_ANY);
   serveraddr.sin_port = sceNetHtons(NET_PORT);
-  sceNetBind(server_tcp_fd, (SceNetSockaddr *)&serveraddr, sizeof(serveraddr));
+  sceNetBind(server_tcp_fd, reinterpret_cast<SceNetSockaddr *>(&serveraddr),
+             sizeof(serveraddr));
 
   auto nbio = 1;
   sceNetSetsockopt(server_tcp_fd, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &nbio,
                    sizeof(nbio));
-  sceNetListen(server_tcp_fd, 2);
+  sceNetListen(server_tcp_fd, 1);
 
   auto server_udp_fd =
       sceNetSocket("SERVER_UDP_SOCKET", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, 0);
-  sceNetBind(server_udp_fd, (SceNetSockaddr *)&serveraddr, sizeof(serveraddr));
+  sceNetBind(server_udp_fd, reinterpret_cast<SceNetSockaddr *>(&serveraddr),
+             sizeof(serveraddr));
 
   std::optional<Client> client;
 
   int cbid;
+  auto timeout = MIN_POLLING_INTERVAL_MICROS;
   auto connect_state = sceKernelCreateEventFlag("ev_netctl", 0, 0, nullptr);
   auto netctl_cb_data = NetCtlCallbackData{connect_state};
   sceNetCtlInetRegisterCallback(&netctl_cb, &netctl_cb_data, &cbid);
@@ -181,8 +185,8 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
   SceNetEpollEvent events[MAX_EPOLL_EVENTS];
   int n;
 
-  while ((n = sceNetEpollWaitCB(epoll, events, MAX_EPOLL_EVENTS,
-                                MIN_POLLING_INTERVAL_MICROS)) >= 0) {
+  while ((n = sceNetEpollWaitCB(epoll, events, MAX_EPOLL_EVENTS, timeout)) >=
+         0) {
     sceNetCtlCheckCallback();
     unsigned int event;
     if (sceKernelPollEventFlag(
@@ -191,6 +195,12 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       switch (event) {
       case NetCtlEvents::Connected:
         SCE_DBG_LOG_INFO("Connected to internet");
+        sceNetBind(server_tcp_fd, (SceNetSockaddr *)&serveraddr,
+                   sizeof(serveraddr));
+        sceNetListen(server_tcp_fd, 1);
+        sceNetBind(server_udp_fd,
+                   reinterpret_cast<SceNetSockaddr *>(&serveraddr),
+                   sizeof(serveraddr));
         sceKernelSetEventFlag(message->ev_flag_connect_state,
                               NetEvent::NET_CONNECT);
         break;
@@ -199,6 +209,7 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
         sceKernelSetEventFlag(message->ev_flag_connect_state,
                               NetEvent::NET_DISCONNECT);
         client.reset();
+        timeout = SECOND_IN_MICROS;
         break;
       }
     }
@@ -293,6 +304,8 @@ int net_thread(__attribute__((unused)) unsigned int arglen, void *argp) {
       sceNetSendto(server_udp_fd, pad_data.GetBufferPointer(),
                    pad_data.GetSize(), 0, &client_addr, addrlen);
     }
+
+    timeout = client->remaining_polling_time();
   }
 
   sceNetCtlInetUnregisterCallback(cbid);

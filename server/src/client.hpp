@@ -125,6 +125,10 @@ public:
   bool is_polling_time_elapsed() const {
     return time_since_last_sent_data() > polling_time_;
   }
+  uint64_t remaining_polling_time() const {
+    return std::clamp(polling_time_ - time_since_last_sent_data(),
+                      static_cast<uint64_t>(0), polling_time_);
+  }
 
   void add_to_buffer(uint8_t const *data, size_t size) {
     buffer_.insert(buffer_.end(), data, data + size);
@@ -196,8 +200,6 @@ public:
 
     if (config->polling_interval() > MIN_POLLING_INTERVAL_MICROS) {
       polling_time_ = config->polling_interval();
-      SCE_DBG_LOG_TRACE("Setting polling interval to %lu for %s", polling_time_,
-                        ip());
     }
   }
 
