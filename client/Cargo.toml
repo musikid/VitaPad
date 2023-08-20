@@ -1,2 +1,9 @@
 [workspace]
-members = ["packages/*"]
+members = [
+    "packages/cli",
+    "packages/flatbuffers_structs",
+    "packages/protocol",
+    "packages/vita_reports",
+    "packages/vita_virtual_device",
+    "packages/gui/src-tauri",
+]

@@ -20,10 +20,7 @@ impl<'a> From<flatbuffers_structs::net_protocol::Handshake<'a>> for Handshake {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    HandshakeRequestSent,
     HandshakeResponseReceived { handshake: Handshake },
-    HeartbeatSent,
     HeartbeatReceived,
-    PadDataSent,
     PadDataReceived { data: MainReport },
 }

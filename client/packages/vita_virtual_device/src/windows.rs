@@ -1,9 +1,11 @@
 use rstar::{primitives::Rectangle, RTree, AABB};
-use std::{ffi::OsString, time::Duration};
+use serde::{Deserialize, Serialize};
 use vigem_client::{
     Client, DS4Buttons, DS4ReportExBuilder, DS4TouchPoint, DS4TouchReport, DpadDirection,
     DualShock4Wired, TargetId,
 };
+
+use std::{ffi::OsString, time::Duration};
 
 use crate::VitaVirtualDevice;
 
@@ -17,90 +19,206 @@ pub enum Error {
     SendReportFailed(#[source] vigem_client::Error),
 }
 
-// TODO: use u16 instead of i32
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy, Deserialize, Serialize)]
+pub enum TouchAction {
+    Dpad(u16),
+    Button(u16),
+}
+
+/// Point in 2D space (x, y).
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Point(pub i32, pub i32);
+
+impl Point {
+    #[inline]
+    pub fn x(&self) -> i32 {
+        self.0
+    }
+
+    #[inline]
+    pub fn y(&self) -> i32 {
+        self.1
+    }
+}
+
+impl rstar::Point for Point {
+    type Scalar = i32;
+
+    const DIMENSIONS: usize = 2;
+
+    #[inline]
+    fn generate(mut generator: impl FnMut(usize) -> Self::Scalar) -> Self {
+        Point(generator(0), generator(1))
+    }
+
+    #[inline]
+    fn nth(&self, index: usize) -> Self::Scalar {
+        match index {
+            0 => self.0,
+            1 => self.1,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn nth_mut(&mut self, index: usize) -> &mut Self::Scalar {
+        match index {
+            0 => &mut self.0,
+            1 => &mut self.1,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TouchZone {
-    rect: Rectangle<(i32, i32)>,
-    /// The button to emulate when the zone is touched
-    button: u16,
+    rect: Rectangle<Point>,
+    /// The emulated action to perform when the touch zone is touched.
+    action: Option<TouchAction>,
+}
+
+impl TouchZone {
+    #[inline]
+    pub fn new(rect: (Point, Point), action: Option<TouchAction>) -> Self {
+        TouchZone {
+            rect: AABB::from_corners(rect.0, rect.1).into(),
+            action,
+        }
+    }
 }
 
 impl rstar::RTreeObject for TouchZone {
-    type Envelope = AABB<(i32, i32)>;
+    type Envelope = AABB<Point>;
 
+    #[inline]
     fn envelope(&self) -> Self::Envelope {
         self.rect.envelope()
     }
 }
 
 impl rstar::PointDistance for TouchZone {
-    fn distance_2(&self, point: &(i32, i32)) -> i32 {
+    #[inline]
+    fn distance_2(&self, point: &Point) -> i32 {
         self.rect.distance_2(point)
     }
 
+    #[inline]
     fn contains_point(&self, point: &<Self::Envelope as rstar::Envelope>::Point) -> bool {
         self.rect.contains_point(point)
     }
 
-    fn distance_2_if_less_or_equal(&self, point: &(i32, i32), max_distance_2: i32) -> Option<i32> {
+    #[inline]
+    fn distance_2_if_less_or_equal(&self, point: &Point, max_distance_2: i32) -> Option<i32> {
         self.rect.distance_2_if_less_or_equal(point, max_distance_2)
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[doc(hidden)]
 pub enum TouchConfig {
     Zones(RTree<TouchZone>),
     Touchpad,
 }
 
-#[derive(Clone, Debug, Copy)]
+impl TouchConfig {
+    pub fn zones<I: IntoIterator<Item = TouchZone>>(it: I) -> Self {
+        TouchConfig::Zones(RTree::bulk_load(it.into_iter().collect()))
+    }
+
+    #[inline]
+    pub fn touchpad() -> Self {
+        TouchConfig::Touchpad
+    }
+}
+
+#[derive(Clone, Debug, Copy, Deserialize, Serialize)]
 pub enum TriggerConfig {
     Shoulder,
     Trigger,
 }
 
 impl Default for TriggerConfig {
+    #[inline]
     fn default() -> Self {
         TriggerConfig::Shoulder
     }
 }
 
-#[derive(Clone, Debug, derive_builder::Builder)]
+#[derive(Clone, Debug, Deserialize, Serialize, derive_builder::Builder)]
 pub struct Config {
-    front_touch_config: Option<TouchConfig>,
-    rear_touch_config: Option<TouchConfig>,
-    trigger_config: TriggerConfig,
+    pub front_touch_config: Option<TouchConfig>,
+    pub rear_touch_config: Option<TouchConfig>,
+    pub trigger_config: TriggerConfig,
 }
 
 // Touch coordinates are in the range [0, 1919] x [108, 887] for the back touchpad
 // and [0, 1919] x [0, 1087] for the front touchpad
-const FRONT_TOUCHPAD_RECT: ((i32, i32), (i32, i32)) = ((0, 0), (1920, 1087));
-const BACK_TOUCHPAD_RECT: ((i32, i32), (i32, i32)) = ((0, 108), (1920, 887));
+const FRONT_TOUCHPAD_RECT: (Point, Point) = (Point(0, 0), Point(1920, 1087));
+const BACK_TOUCHPAD_RECT: (Point, Point) = (Point(0, 108), Point(1920, 887));
 
 impl Config {
+    #[inline]
     pub fn builder() -> ConfigBuilder {
         ConfigBuilder::default()
     }
 
+    #[inline]
     pub fn back_l2_r2_front_touchpad() -> Self {
         Config {
-            rear_touch_config: Some(TouchConfig::Zones(RTree::bulk_load(vec![
-                TouchZone {
-                    rect: Rectangle::from_corners(
+            rear_touch_config: Some(TouchConfig::zones([
+                TouchZone::new(
+                    (
                         BACK_TOUCHPAD_RECT.0,
-                        ((BACK_TOUCHPAD_RECT.1).0 / 2, (BACK_TOUCHPAD_RECT.1).1),
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.1.y()),
                     ),
-                    button: DS4Buttons::TRIGGER_LEFT,
-                },
-                TouchZone {
-                    rect: Rectangle::from_corners(
-                        ((BACK_TOUCHPAD_RECT.1).0 / 2, (BACK_TOUCHPAD_RECT.0).0),
+                    Some(TouchAction::Button(DS4Buttons::TRIGGER_LEFT)),
+                ),
+                TouchZone::new(
+                    (
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.0.y()),
                         BACK_TOUCHPAD_RECT.1,
                     ),
-                    button: DS4Buttons::TRIGGER_RIGHT,
-                },
-            ]))),
+                    Some(TouchAction::Button(DS4Buttons::TRIGGER_RIGHT)),
+                ),
+            ])),
+            front_touch_config: Some(TouchConfig::Touchpad),
+            trigger_config: TriggerConfig::Shoulder,
+        }
+    }
+
+    #[inline]
+    pub fn back_l2_l3_r2_r3_front_touchpad() -> Self {
+        Config {
+            rear_touch_config: Some(TouchConfig::zones([
+                TouchZone::new(
+                    (
+                        BACK_TOUCHPAD_RECT.0,
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.1.y() / 2),
+                    ),
+                    Some(TouchAction::Button(DS4Buttons::TRIGGER_LEFT)),
+                ),
+                TouchZone::new(
+                    (
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.0.y()),
+                        Point(BACK_TOUCHPAD_RECT.1.x(), BACK_TOUCHPAD_RECT.1.y() / 2),
+                    ),
+                    Some(TouchAction::Button(DS4Buttons::TRIGGER_RIGHT)),
+                ),
+                TouchZone::new(
+                    (
+                        Point(BACK_TOUCHPAD_RECT.0.x(), BACK_TOUCHPAD_RECT.1.y() / 2),
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.1.y()),
+                    ),
+                    Some(TouchAction::Button(DS4Buttons::THUMB_LEFT)),
+                ),
+                TouchZone::new(
+                    (
+                        Point(BACK_TOUCHPAD_RECT.1.x() / 2, BACK_TOUCHPAD_RECT.1.y() / 2),
+                        BACK_TOUCHPAD_RECT.1,
+                    ),
+                    Some(TouchAction::Button(DS4Buttons::THUMB_RIGHT)),
+                ),
+            ])),
             front_touch_config: Some(TouchConfig::Touchpad),
             trigger_config: TriggerConfig::Shoulder,
         }
@@ -108,6 +226,7 @@ impl Config {
 }
 
 impl Default for Config {
+    #[inline]
     fn default() -> Self {
         Config {
             front_touch_config: Some(TouchConfig::Touchpad),
@@ -134,7 +253,7 @@ impl VitaDevice {
 
         Ok(VitaDevice {
             ds4_target,
-            config: Config::back_l2_r2_front_touchpad(),
+            config: Config::back_l2_l3_r2_r3_front_touchpad(),
         })
     }
 }
@@ -146,6 +265,12 @@ impl VitaVirtualDevice<&ConfigBuilder> for VitaDevice {
         None
     }
 
+    #[inline]
+    fn get_config(&self) -> &Self::Config {
+        &self.config
+    }
+
+    #[inline]
     fn set_config(&mut self, config: &ConfigBuilder) -> crate::Result<()> {
         if let Some(front_touch_config) = &config.front_touch_config {
             self.config.front_touch_config = front_touch_config.clone();
@@ -191,16 +316,26 @@ impl VitaVirtualDevice<&ConfigBuilder> for VitaDevice {
 
         for touch in &report.front_touch.reports {
             if let Some(TouchConfig::Zones(zones)) = &self.config.front_touch_config {
-                if let Some(zone) = zones.locate_at_point(&(touch.x.into(), touch.y.into())) {
-                    buttons |= zone.button;
+                if let Some(zone) = zones.locate_at_point(&Point(touch.x.into(), touch.y.into())) {
+                    if let Some(action) = zone.action {
+                        match action {
+                            TouchAction::Button(button) => buttons |= button,
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
 
         for touch in &report.back_touch.reports {
             if let Some(TouchConfig::Zones(zones)) = &self.config.rear_touch_config {
-                if let Some(zone) = zones.locate_at_point(&(touch.x.into(), touch.y.into())) {
-                    buttons |= zone.button;
+                if let Some(zone) = zones.locate_at_point(&Point(touch.x.into(), touch.y.into())) {
+                    if let Some(action) = zone.action {
+                        match action {
+                            TouchAction::Button(button) => buttons |= button,
+                            _ => {}
+                        }
+                    }
                 }
             }
         }

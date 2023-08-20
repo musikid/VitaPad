@@ -7,3 +7,8 @@ edition = "2021"
 flatbuffers_structs = { path = "../flatbuffers_structs" }
 thiserror = "1.0.44"
 vita_reports = { path = "../vita_reports" }
+tokio-util = { version = "0.7.8", optional = true, features = ["codec"] }
+bytes = { version = "1.4.0", optional = true }
+
+[features]
+codec = ["dep:tokio-util", "dep:bytes"]

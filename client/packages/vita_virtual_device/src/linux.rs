@@ -10,14 +10,23 @@ use input_linux::{
     AbsoluteAxis, AbsoluteEvent, AbsoluteInfo, AbsoluteInfoSetup, EventKind, EventTime, InputEvent,
     InputId, InputProperty, Key, KeyEvent, KeyState, SynchronizeEvent, UInputHandle,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::VitaVirtualDevice;
 
 type TrackingId = u8;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {}
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
 pub struct VitaDevice<F: AsRawFd> {
+    config: Config,
     main_handle: UInputHandle<F>,
     sensor_handle: UInputHandle<F>,
     previous_front_touches: [Option<TrackingId>; 6],
@@ -264,6 +273,7 @@ impl<F: AsRawFd> VitaDevice<F> {
             .map(|(main, sensor)| [main, sensor].to_vec());
 
         Ok(VitaDevice {
+            config: Config::default(),
             main_handle,
             sensor_handle,
             previous_front_touches: [None; 6],
@@ -296,6 +306,10 @@ impl VitaDevice<File> {
 
 impl<F: AsRawFd + Write> VitaVirtualDevice<Config> for VitaDevice<F> {
     type Config = Config;
+
+    fn get_config(&self) -> &Self::Config {
+        &self.config
+    }
 
     fn identifiers(&self) -> Option<&[OsString]> {
         self.ids.as_ref().map(|ids| ids.as_slice())

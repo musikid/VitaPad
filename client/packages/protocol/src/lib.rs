@@ -1,3 +1,5 @@
+#[cfg(feature = "codec")]
+pub mod codec;
 pub mod connection;
 pub mod events;
 pub mod state;

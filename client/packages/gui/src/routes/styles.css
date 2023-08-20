@@ -1,0 +1,20 @@
+body {
+	@apply bg-gradient-to-r
+	light:from-gray-100 light:to-white 
+	dark:from-violet-900 dark:to-purple-900;
+	@apply text-gray-900 dark:text-white;
+}
+
+* {
+	@apply font-sans text-base;
+	@apply transition-all duration-125;
+}
+
+p {
+	@apply font-light;
+}
+
+html,
+body {
+	@apply h-100% w-100% m-0;
+}
