@@ -101,7 +101,22 @@ impl Config {
                     button: DS4Buttons::TRIGGER_RIGHT,
                 },
             ]))),
-            front_touch_config: Some(TouchConfig::Touchpad),
+            front_touch_config: Some(TouchConfig::Zones(RTree::bulk_load(vec![
+                TouchZone {
+                    rect: Rectangle::from_corners(
+                        FRONT_TOUCHPAD_RECT.0,
+                        ((FRONT_TOUCHPAD_RECT.1).0 / 2, (FRONT_TOUCHPAD_RECT.1).1),
+                    ),
+                    button: DS4Buttons::THUMB_LEFT,
+                },
+                TouchZone {
+                    rect: Rectangle::from_corners(
+                        ((FRONT_TOUCHPAD_RECT.1).0 / 2, (FRONT_TOUCHPAD_RECT.0).0),
+                        FRONT_TOUCHPAD_RECT.1,
+                    ),
+                    button: DS4Buttons::THUMB_RIGHT,
+                },
+            ]))),
             trigger_config: TriggerConfig::Shoulder,
         }
     }
